@@ -1,0 +1,7 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# kind's containerd imports no drop-ins; gvisor-installer requires that it
+# does rather than editing the main configuration.
+containerdConfigPatches:
+  - |-
+    imports = ["/etc/containerd/conf.d/*.toml"]
