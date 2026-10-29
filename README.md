@@ -30,7 +30,7 @@ gVisor 是被宿主机的 CRI 运行时直接执行的程序，不是常驻服�
 ## Kubernetes（Helm）
 
 ```bash
-helm install gvisor oci://ghcr.io/fivetime/charts/gvisor-installer --version 0.1.0 \
+helm install gvisor oci://ghcr.io/fivetime/charts/gvisor-installer --version 0.1.1 \
     -n gvisor-system --create-namespace \
     --set nodeSelector.gvisor=enabled
 kubectl label node <节点> gvisor=enabled

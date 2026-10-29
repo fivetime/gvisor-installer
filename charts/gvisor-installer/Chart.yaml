@@ -2,7 +2,7 @@ apiVersion: v2
 name: gvisor-installer
 description: Installs gVisor (runsc) on the nodes you select and registers it with their CRI runtime (containerd or CRI-O)
 type: application
-version: 0.1.0
+version: 0.1.1
 # The gVisor release the default image carries.
 appVersion: "20261019.0"
 home: https://github.com/fivetime/gvisor-installer

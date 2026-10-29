@@ -7,7 +7,7 @@ Wants=network-online.target
 After=network-online.target containerd.service crio.service
 
 [Container]
-Image=ghcr.io/fivetime/gvisor-installer:0.1.0
+Image=ghcr.io/fivetime/gvisor-installer:0.1.1
 Exec=install
 # The host's root, and its PID namespace to restart containerd or CRI-O.
 PodmanArgs=--pid=host --privileged

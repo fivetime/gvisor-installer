@@ -11,7 +11,7 @@ app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
-helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{- define "gvisor-installer.selectorLabels" -}}
@@ -21,7 +21,7 @@ app.kubernetes.io/component: installer
 {{- end }}
 
 {{- define "gvisor-installer.image" -}}
-{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.Version }}
+{{ .Values.image.repository }}:{{ .Values.image.tag | default (regexReplaceAll "\\+.*$" .Chart.Version "") }}
 {{- end }}
 
 {{/* The installer's environment, shared by install and uninstall. */}}

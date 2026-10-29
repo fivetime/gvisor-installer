@@ -19,6 +19,17 @@ jobs:
       - run: |
           helm lint charts/gvisor-installer
           helm template t charts/gvisor-installer >/dev/null
+      # Flux hands a chart pulled by digest a version with build metadata
+      # (0.1.1+59bed083c3ae); "+" is not valid in a label value or an image tag.
+      - name: The chart renders with build metadata in its version
+        run: |
+          v=$(sed -n 's/^version: *//p' charts/gvisor-installer/Chart.yaml)
+          helm package charts/gvisor-installer --version "$v+0123456789ab" -d /tmp/pkg
+          helm template t "/tmp/pkg/gvisor-installer-$v+0123456789ab.tgz" > /tmp/r.yaml
+          grep -n 'helm.sh/chart' /tmp/r.yaml | head -2
+          grep -n "image: " /tmp/r.yaml | head -2
+          ! grep -nE '(helm.sh/chart: .*\+|image: .*\+)' /tmp/r.yaml
+          grep -q "image: ghcr.io/fivetime/gvisor-installer:$v\$" /tmp/r.yaml
       - name: The chart's appVersion is the gVisor release the image carries
         run: |
           test "$(cat GVISOR_RELEASE)" = "$(sed -n 's/^appVersion: *"\(.*\)"/\1/p' charts/gvisor-installer/Chart.yaml)"
