@@ -1,0 +1,26 @@
+# Installs gVisor on this host at boot, without Kubernetes.
+# Copy to /etc/containers/systemd/, then: systemctl daemon-reload &&
+# systemctl start gvisor-installer.service
+[Unit]
+Description=Install gVisor (runsc) and register it with the CRI runtime
+Wants=network-online.target
+After=network-online.target containerd.service crio.service
+
+[Container]
+Image=ghcr.io/fivetime/gvisor-installer:0.1.0
+Exec=install
+# The host's root, and its PID namespace to restart containerd or CRI-O.
+PodmanArgs=--pid=host --privileged
+SecurityLabelDisable=true
+Volume=/:/host
+# See README.md for every setting, e.g.:
+#Environment=GVISOR_PLATFORM=kvm
+#Environment=GVISOR_RUNSC_FLAGS=net-raw=true
+#Environment=GVISOR_CRI=containerd
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

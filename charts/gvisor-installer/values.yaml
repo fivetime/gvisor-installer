@@ -1,0 +1,63 @@
+image:
+  repository: ghcr.io/fivetime/gvisor-installer
+  # Defaults to the chart's version.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+gvisor:
+  # The runtime handler registered with the CRI runtime, and the RuntimeClass's
+  # handler. Lowercase letters, digits and dashes.
+  handler: gvisor
+  # systrap needs no /dev/kvm and works in nested VMs; kvm is faster where
+  # /dev/kvm exists on the node.
+  platform: systrap
+  # Extra runsc flags, e.g. {net-raw: "true"} lets pods use raw sockets (ping).
+  runscFlags: {}
+  # auto (CRI-O if it is active, else containerd), or containerd, crio, or
+  # "crio containerd" for both (CRI-O for kubelet, containerd for dockerd).
+  cri: auto
+  # Restart the CRI runtime when its configuration changed; neither runtime
+  # picks up a new handler otherwise. Running containers survive the restart.
+  restartCRI: true
+  prefix: /opt/gvisor
+  binDir: /usr/local/bin
+  containerd:
+    config: /etc/containerd/config.toml
+    # Must be imported by the containerd configuration.
+    dropInDir: /etc/containerd/conf.d
+  crio:
+    dropInDir: /etc/crio/crio.conf.d
+
+# Set to "true" on a node once gVisor is installed there; the RuntimeClass
+# schedules onto it, and uninstall visits the nodes that carry it.
+nodeLabel: gvisor-installer.fivetime.io/installed
+
+# Which nodes get gVisor. An empty nodeSelector means every node whose taints
+# are tolerated.
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+runtimeClass:
+  create: true
+  name: gvisor
+  # Added to the node label above in the RuntimeClass's nodeSelector.
+  nodeSelector: {}
+  tolerations: []
+  # e.g. {cpu: 250m, memory: 64Mi}
+  overhead: {}
+
+uninstall:
+  # helm uninstall runs the uninstall on every node carrying nodeLabel (a
+  # pre-delete hook). It fails, and leaves the release in place, on a node
+  # where gVisor pods still run.
+  enabled: true
+  timeoutSeconds: 600
+
+priorityClassName: system-node-critical
+podAnnotations: {}
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi

@@ -1,0 +1,98 @@
+{{- if .Values.uninstall.enabled }}
+{{- $fullname := include "gvisor-installer.fullname" . }}
+{{- $job := dict
+  "apiVersion" "batch/v1"
+  "kind" "Job"
+  "metadata" (dict
+    "namespace" .Release.Namespace
+    "labels" (include "gvisor-installer.labels" . | fromYaml))
+  "spec" (dict
+    "backoffLimit" 0
+    "ttlSecondsAfterFinished" 600
+    "template" (dict
+      "metadata" (dict "labels" (dict "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "uninstall"))
+      "spec" (dict
+        "serviceAccountName" $fullname
+        "hostPID" true
+        "restartPolicy" "Never"
+        "priorityClassName" .Values.priorityClassName
+        "imagePullSecrets" .Values.imagePullSecrets
+        "tolerations" (list (dict "operator" "Exists"))
+        "containers" (list (merge (dict "name" "uninstall") (include "gvisor-installer.hostContainer" (dict "root" . "command" "uninstall") | fromYaml)))
+        "volumes" (list (dict "name" "host" "hostPath" (dict "path" "/" "type" "Directory")))))) }}
+# The per-node uninstall Job; the dispatcher sets its name and node.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-uninstall
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gvisor-installer.labels" . | nindent 4 }}
+data:
+  job.json: {{ toJson $job | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-uninstall
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gvisor-installer.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ add .Values.uninstall.timeoutSeconds 300 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: uninstall-dispatcher
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: dispatcher
+          image: {{ include "gvisor-installer.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [uninstall-nodes]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DAEMONSET
+              value: {{ $fullname }}
+            - name: INSTALLER_SELECTOR
+              value: {{ printf "app.kubernetes.io/name=%s,app.kubernetes.io/instance=%s,app.kubernetes.io/component=installer" .Chart.Name .Release.Name | quote }}
+            - name: GVISOR_NODE_LABEL
+              value: {{ .Values.nodeLabel | quote }}
+            - name: JOB_TEMPLATE
+              value: /etc/gvisor-installer/job.json
+            - name: UNINSTALL_TIMEOUT
+              value: {{ .Values.uninstall.timeoutSeconds | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: job
+              mountPath: /etc/gvisor-installer
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: job
+          configMap:
+            name: {{ $fullname }}-uninstall
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -1,234 +1,150 @@
-# 基于 Podman Quadlet 部署 gVisor（runsc）节点运行时
+# gvisor-installer
 
-本文采用“Quadlet 安装器 + 宿主机原生运行时”的方式，为使用 containerd 的 Kubernetes 节点安装 gVisor。安装器负责写入二进制和配置；Pod 最终由宿主机 containerd 直接调用 gVisor。
+把 gVisor（`runsc`）装到宿主机上，并注册成 CRI 运行时（containerd 或 CRI-O）的一个 runtime handler。
+同一个镜像有两种用法：
 
-> 本文已于 2026-08-30 在 `container1` 实测通过：Ubuntu 26.04、Podman 5.7.0、containerd 2.3.4（配置 version 4）、gVisor `release-20260817.0`、Kubernetes 1.36。本文的 containerd 2.x 配置不适用于 CRI-O 节点。
+- **Kubernetes**：Helm chart，按 nodeSelector / affinity 选择节点安装，`helm uninstall` 时清理这些节点；
+- **单机**：Podman Quadlet 服务，开机执行一次安装。
 
-## 一、前置检查
+gVisor 是被宿主机的 CRI 运行时直接执行的程序，不是常驻服务，所以它必须装在宿主机的文件系统里，没法像 dockerd 那样整个跑在容器里。
+这个镜像就是一个安装器：把文件放到宿主机、写 CRI 配置、必要时重启 CRI 运行时。
 
-```bash
-podman --version
-containerd --version
-systemctl is-active containerd
-test -e /dev/kvm && echo "KVM available"
-grep -n '^version\|^imports' /etc/containerd/config.toml
-```
+## 镜像里装的是什么
 
-本文使用 `platform = "kvm"`；没有 `/dev/kvm` 时改用 `systrap`。containerd 主配置必须导入 drop-in，例如：
+`GVISOR_RELEASE` 文件里钉死的 gVisor 发行版（当前 `20261019.0`），chart 的 `appVersion` 与之一致。
+20261026.0 先不用：它的 runsc 拒绝加入已有的 UTS 命名空间（google/gvisor#12984），
+而 CRI-O 总是为 Pod 固定 UTS 命名空间，CRI-O 下的 Pod 全都起不来（CI 里验证过）。
+构建时下载 `gvisor.tar.zstd` 并校验 sha512，整个 tarball 都保留：从 20260831.0 起 gVisor 只发布 tarball，
+而且 `runsc` 要靠它旁边 `gvisor-bin/` 里的 `gvisor_sentry` 等 sidecar 启动沙箱，缺了就拒绝启动任何 pod。
 
-```toml
-version = 4
-imports = ['/etc/containerd/conf.d/*.toml']
-```
-
-containerd 1.x 的 CRI 插件路径不同，不能直接使用本文配置。
-
-## 二、准备安装器
-
-本仓库提供了经过实测的完整文件：
+宿主机上的布局：
 
 ```text
-./
-├── Dockerfile
-├── containerd-gvisor.toml
-├── entrypoint.sh
-├── gvisor-installer.container
-├── runsc.toml
-├── runtimeclass.yaml
-└── test-pod.yaml
+/opt/gvisor/release/                 runsc、containerd-shim-runsc-v1、gvisor-bin/、RELEASE（升级时整体替换）
+/opt/gvisor/handlers/<handler>/      runsc.toml（containerd 用）、crio-runsc.toml（CRI-O 用），即 shim 配置和 runsc 参数
+/usr/local/bin/runsc                 -> /opt/gvisor/release/runsc
+/usr/local/bin/containerd-shim-runsc-v1 -> /opt/gvisor/release/containerd-shim-runsc-v1
+/etc/containerd/conf.d/90-gvisor-<handler>.toml   或   /etc/crio/crio.conf.d/90-gvisor-<handler>.conf
 ```
 
-克隆仓库后，构建上下文就是仓库根目录。Quadlet 文件需要单独安装到
-`/etc/containers/systemd/`。
-
-### `runsc.toml`
-
-```toml
-platform = "kvm"
-```
-
-runsc 使用顶层 TOML 选项；原文的 `[log] level = "info"` 不是有效配置。
-
-### `containerd-gvisor.toml`
-
-```toml
-version = 4
-
-[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.gvisor]
-  runtime_type = 'io.containerd.runsc.v1'
-
-  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.gvisor.options]
-    TypeUrl = 'io.containerd.runsc.v1.options'
-    ConfigPath = '/etc/containerd/runsc.toml'
-```
-
-### `entrypoint.sh`
-
-```sh
-#!/bin/sh
-set -eu
-
-HOST_BIN=/host/usr/local/bin
-HOST_CONF_DIR=/etc/containerd/conf.d
-HOST_RUNSC_CONF=/etc/containerd/runsc.toml
-
-install -D -m 0755 /usr/local/bin/runsc "${HOST_BIN}/runsc"
-install -D -m 0755 /usr/local/bin/containerd-shim-runsc-v1 \
-  "${HOST_BIN}/containerd-shim-runsc-v1"
-install -D -m 0644 /etc/runsc.toml "${HOST_RUNSC_CONF}"
-install -D -m 0644 /etc/containerd-gvisor.toml \
-  "${HOST_CONF_DIR}/99-gvisor.toml"
-
-nsenter -t 1 -m -u -n -i -- \
-  /usr/local/bin/containerd --config /etc/containerd/config.toml config dump >/dev/null
-nsenter -t 1 -m -u -n -i -- systemctl restart containerd
-nsenter -t 1 -m -u -n -i -- systemctl is-active --quiet containerd
-
-echo "gVisor binaries and containerd configuration installed successfully"
-```
-
-containerd 没有受支持的配置热重载流程，因此必须使用 `restart`，不能使用原文的 `systemctl reload containerd`。重启通常不终止已有容器，但仍应在变更窗口操作。
-
-### `Dockerfile`
-
-```dockerfile
-FROM alpine:3.22
-
-ARG TARGETARCH
-ARG GVISOR_CHANNEL=release/latest
-
-RUN apk add --no-cache ca-certificates curl util-linux \
-    && case "${TARGETARCH}" in \
-         amd64) gvisor_arch=x86_64 ;; \
-         arm64) gvisor_arch=aarch64 ;; \
-         *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-       esac \
-    && base_url="https://storage.googleapis.com/gvisor/releases/${GVISOR_CHANNEL}/${gvisor_arch}" \
-    && curl -fsSLo /usr/local/bin/runsc "${base_url}/runsc" \
-    && curl -fsSLo /usr/local/bin/containerd-shim-runsc-v1 \
-       "${base_url}/containerd-shim-runsc-v1" \
-    && chmod 0755 /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1
-
-COPY runsc.toml /etc/runsc.toml
-COPY containerd-gvisor.toml /etc/containerd-gvisor.toml
-COPY --chmod=0755 entrypoint.sh /entrypoint.sh
-ENTRYPOINT ["/entrypoint.sh"]
-```
-
-必须同时安装 `runsc` 和 `containerd-shim-runsc-v1`。`release/latest` 在本次实测中解析为 `release-20260817.0`。
-
-## 三、构建与部署 Quadlet
+## Kubernetes（Helm）
 
 ```bash
-cd /opt/gvisor-installer
-podman build --pull=always -t localhost/gvisor-installer:v1 .
+helm install gvisor oci://ghcr.io/fivetime/charts/gvisor-installer --version 0.1.0 \
+    -n gvisor-system --create-namespace \
+    --set nodeSelector.gvisor=enabled
+kubectl label node <节点> gvisor=enabled
 ```
 
-创建 `/etc/containers/systemd/gvisor-installer.container`：
+- 选中的节点上，DaemonSet 的 init 容器执行安装，完成后给节点打 `gvisor-installer.fivetime.io/installed=true`。
+  chart 建的 RuntimeClass（默认名 `gvisor`）只调度到带这个标签的节点，所以 pod 不会落到还没装好的节点上。
+- 新节点满足选择条件时自动安装；节点重启后 pod 重建，会再检查一次（没有变化就什么都不做）。
+- **CRI 运行时只在它的配置真的变了时才重启**（第一次安装、换了 handler 或平台），运行中的容器不受影响。
+- `helm uninstall`：pre-delete hook 先删掉 DaemonSet，再在每个带上述标签的节点上跑一个清理 Job，
+  删除 drop-in、重启 CRI 运行时、删除 `/opt/gvisor` 和两个链接，最后去掉标签。
+  **节点上还有 gVisor pod 在运行时，清理会拒绝执行，`helm uninstall` 失败**，release 保持原样；
+  删掉那些 pod 后再执行一次即可。
+- 节点不再被选中（比如去掉了选择用的标签）时，DaemonSet 的 pod 会离开，但 gVisor 留在节点上，
+  `installed` 标签也留着，RuntimeClass 照样能调度过去。要撤掉一个节点，可以在节点上用下面的单机卸载命令。
 
-```ini
-[Unit]
-Description=gVisor host runtime installer
-Wants=network-online.target
-After=network-online.target containerd.service
+主要的 values（全部见 `charts/gvisor-installer/values.yaml`）：
 
-[Container]
-Image=localhost/gvisor-installer:v1
-ContainerName=gvisor-installer
-PodmanArgs=--pid=host --privileged
-SecurityLabelDisable=true
-Volume=/usr/local/bin:/host/usr/local/bin:rw
-Volume=/etc/containerd:/etc/containerd:rw
+| 值 | 默认 | 说明 |
+|---|---|---|
+| `gvisor.handler` | `gvisor` | runtime handler 名，也是 RuntimeClass 的 handler |
+| `gvisor.platform` | `systrap` | `systrap` 不需要 `/dev/kvm`，嵌套虚拟化里也能用；有 `/dev/kvm` 时 `kvm` 更快 |
+| `gvisor.runscFlags` | `{}` | 额外的 runsc 参数，如 `{net-raw: "true"}` 允许 pod 用 raw socket（ping） |
+| `gvisor.cri` | `auto` | `auto`：CRI-O 在运行就配 CRI-O，否则配 containerd；也可以写 `containerd`、`crio` 或 `"crio containerd"` |
+| `gvisor.restartCRI` | `true` | 配置变化时重启 CRI 运行时；关掉的话要自己重启，handler 才会生效 |
+| `nodeSelector` / `affinity` / `tolerations` | 空 | 装到哪些节点；空的 nodeSelector 表示所有没有不可容忍污点的节点 |
+| `nodeLabel` | `gvisor-installer.fivetime.io/installed` | 装好后打的标签 |
+| `runtimeClass.create` / `.name` | `true` / `gvisor` | 集群里已经有同名 RuntimeClass 时，改名或设 `create: false` |
+| `runtimeClass.overhead` | `{}` | 如 `{cpu: 250m, memory: 64Mi}` |
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Podman 5.7 Quadlet 应通过 `PodmanArgs` 传入 PID 和特权参数；原文的 `PID=host` 与 `Privileged=true` 会导致配置无效或 service 无法生成。安装结束后无需 `tail -f` 驻留，oneshot 更合适。
+## 单机（Podman Quadlet）
 
 ```bash
+cp quadlet/gvisor-installer.container /etc/containers/systemd/
 systemctl daemon-reload
 systemctl start gvisor-installer.service
-systemctl status gvisor-installer.service --no-pager
-journalctl -u gvisor-installer.service -n 50 --no-pager
+journalctl -u gvisor-installer.service --no-pager
 ```
 
-不要对生成的 Quadlet service 执行 `systemctl enable`；启用关系由 `.container` 文件的 `[Install]` 在生成时建立。
+设置通过 `.container` 文件里的 `Environment=` 传入，见下表。不要对生成的 service 执行 `systemctl enable`，
+启用关系由 `[Install]` 段在生成时建立。
 
-## 四、验证节点运行时
+卸载（同样适用于 Kubernetes 里撤掉单个节点）：
 
 ```bash
-/usr/local/bin/runsc --version
-test -x /usr/local/bin/containerd-shim-runsc-v1
-systemctl is-active containerd
-containerd --config /etc/containerd/config.toml config dump \
-  | sed -n '/runtimes.gvisor/,+8p'
+podman run --rm --privileged --pid=host -v /:/host ghcr.io/fivetime/gvisor-installer:0.1.0 uninstall
+rm /etc/containers/systemd/gvisor-installer.container && systemctl daemon-reload
 ```
 
-预期 runsc 显示目标版本、shim 可执行、containerd 为 `active`，且配置 dump 存在 `runtimes.gvisor`。`crictl info | grep gvisor` 在不同版本上不一定可靠，最终应以真实 Pod 为准。
+## 安装器的环境变量
 
-## 五、Kubernetes 端到端验证
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `GVISOR_HANDLER` | `gvisor` | handler 名（小写字母、数字、`-`） |
+| `GVISOR_PLATFORM` | `systrap` | runsc 的 `--platform` |
+| `GVISOR_RUNSC_FLAGS` | 空 | 空格分隔的 `名=值`，如 `net-raw=true` |
+| `GVISOR_CRI` | `auto` | `containerd`、`crio`，或两者都写 |
+| `GVISOR_RESTART_CRI` | `true` | |
+| `GVISOR_RESTART_TIMEOUT` | `60` | 重启后等 CRI 运行时恢复的秒数，超时即回滚 |
+| `GVISOR_PREFIX` | `/opt/gvisor` | |
+| `GVISOR_BIN_DIR` | `/usr/local/bin` | 放两个链接的目录；containerd 要在 PATH 里找到 shim |
+| `GVISOR_CONTAINERD_CONFIG` | `/etc/containerd/config.toml` | |
+| `GVISOR_CONTAINERD_DROPIN_DIR` | `/etc/containerd/conf.d` | 必须被主配置的 `imports` 引入 |
+| `GVISOR_CRIO_DROPIN_DIR` | `/etc/crio/crio.conf.d` | |
+| `GVISOR_FORCE` | `false` | 卸载时不检查运行中的沙箱 |
+| `GVISOR_NODE_LABEL` | 空 | 仅 Kubernetes：装好后给节点打的标签 |
 
-先创建 RuntimeClass：
+## 对 CRI 运行时的要求
 
-```yaml
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: gvisor
-handler: gvisor
+- **containerd** 2.x 或 1.7，配置 version 2–4。主配置必须引入 drop-in 目录，安装器不会改主配置：
+
+  ```toml
+  imports = ["/etc/containerd/conf.d/*.toml"]
+  ```
+
+  drop-in 按主配置的 version 写，写完先用 `containerd config dump` 确认 handler 生效，不生效就撤回 drop-in 并报错，不会重启。
+  runsc 参数放在 shim 配置的 `[runsc_config]` 段。
+- **CRI-O** 1.37 或更新，`selinux = false`（gVisor 不支持 SELinux 标签）。按 gVisor 的
+  [CRI-O 文档](https://gvisor.dev/docs/user_guide/containerd/crio/)，handler 是
+  `runtime_type = "vm"` 的 `containerd-shim-runsc-v1`（和 Kata 一样），shim 配置带 `grouping = true`，
+  让 Pod 里的应用容器加入 pause 容器的沙箱。把 runsc 当普通 OCI 运行时交给 conmon 是行不通的。
+  CRI-O 用 systemd cgroup 驱动（默认）时自动加上 `systemd-cgroup = "true"`。
+  已知问题：删除 Pod 时 runsc 第一次会报 `failed to delete filestore file`（CRI-O 已先卸载了 rootfs），
+  kubelet 重试一次即成功，不影响使用。
+- 两者都不支持热加载 handler，所以配置变化后要 `systemctl restart`。
+
+## 重启失败时的回滚
+
+重启 CRI 运行时后，如果它在 `GVISOR_RESTART_TIMEOUT` 秒内没起来，安装器会：
+
+1. 把 drop-in 恢复成写之前的样子（原来没有就删掉），再重启一次；
+2. 把被拒绝的 drop-in 存成 `/opt/gvisor/handlers/<handler>/<drop-in 文件名>.rejected`，以错误退出，带上运行时日志里的报错。
+
+之后同样内容的 drop-in 不会再试（DaemonSet 的 init 容器重试也不会再把运行时弄挂），
+改了配置会生成不同的 drop-in，可以直接再装；要原样重试就删掉那个 `.rejected` 文件。
+
+## 和容器化的 dockerd 一起用
+
+dockerd 跑在容器里时，要把宿主机的 `/opt/gvisor` 挂进去，并在 `daemon.json` 里直接指向真实路径，
+而不是挂 `/usr/local/bin/runsc` 这个链接（挂进去的是文件本身，`gvisor-bin/` 不会跟着进去，沙箱会起不来）：
+
+```json
+{ "runtimes": { "runsc": { "path": "/opt/gvisor/release/runsc", "runtimeArgs": ["--platform=systrap"] } } }
 ```
 
-然后修改 `test-pod.yaml` 中的节点名，确保 Pod 只调度到已安装 gVisor 的
-containerd 节点。目标节点如有污点，还需要按实际情况添加 toleration：
+## 构建与发布
 
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-gvisor-pod
-spec:
-  runtimeClassName: gvisor
-  nodeSelector:
-    kubernetes.io/hostname: container1
-  restartPolicy: Never
-  containers:
-    - name: test
-      image: docker.io/library/alpine:3.22
-      command: ["sh", "-c", "uname -a; sleep 3600"]
-```
+`.github/workflows/ci.yaml`：
 
-```bash
-kubectl apply -f runtimeclass.yaml
-kubectl apply -f test-pod.yaml
-kubectl wait --for=condition=Ready pod/test-gvisor-pod --timeout=180s
-kubectl get pod test-gvisor-pod -o wide
-kubectl exec test-gvisor-pod -- uname -a
-kubectl exec test-gvisor-pod -- sh -c 'dmesg | head -3'
-```
+- 每次 push 和 PR：shellcheck、`helm lint`，再做两组端到端测试：
+  - kind（containerd）里用 chart 安装、跑 gVisor pod、确认卸载在 pod 运行时会拒绝、卸载后节点干净；
+  - runner 上装 CRI-O 1.37，按 Quadlet 的方式跑安装器：CRI-O 起不来时回滚且不再重试、
+    跑 gVisor pod（含 ping 和 runsc 参数）、卸载拒绝与清理；
+- 每次 push：多架构镜像推到 `ghcr.io/fivetime/gvisor-installer:sha-<commit>`；
+- `v<chart version>` 标签：镜像加上 `:<chart version>` 标签，chart 推到 `oci://ghcr.io/fivetime/charts/gvisor-installer`。
 
-本次实测输出：
-
-```text
-Linux test-gvisor-pod 4.19.0-gvisor ... x86_64 Linux
-[   0.000000] Starting gVisor...
-```
-
-这同时验证了 RuntimeClass handler、containerd shim、runsc、KVM 平台和 Kubernetes 调度链路。
-
-## 六、升级
-
-```bash
-cd /opt/gvisor-installer
-podman build --pull=always --no-cache -t localhost/gvisor-installer:v2 .
-sed -i 's/gvisor-installer:v1/gvisor-installer:v2/' \
-  /etc/containers/systemd/gvisor-installer.container
-systemctl daemon-reload
-systemctl restart gvisor-installer.service
-```
-
-升级过程会重启 containerd，不应描述为“无缝平滑更新”。升级后必须重新执行第四、五节验证。
+升级 gVisor：改 `GVISOR_RELEASE` 和 chart 的 `appVersion`，升 chart 的 `version`，打标签。

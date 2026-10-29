@@ -1,8 +1,0 @@
-version = 4
-
-[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.gvisor]
-  runtime_type = 'io.containerd.runsc.v1'
-
-  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.gvisor.options]
-    TypeUrl = 'io.containerd.runsc.v1.options'
-    ConfigPath = '/etc/containerd/runsc.toml'

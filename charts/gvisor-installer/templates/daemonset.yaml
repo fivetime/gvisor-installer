@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "gvisor-installer.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gvisor-installer.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "gvisor-installer.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "gvisor-installer.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "gvisor-installer.fullname" . }}
+      # To restart the CRI runtime through the host's systemd.
+      hostPID: true
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The install runs once per pod start: on a new node, on a changed
+      # configuration (a new pod template), and after the node reboots.
+      initContainers:
+        - name: install
+          {{- include "gvisor-installer.hostContainer" (dict "root" . "command" "install") | nindent 10 }}
+      containers:
+        - name: idle
+          image: {{ include "gvisor-installer.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [sleep, infinity]
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: host
+          hostPath:
+            path: /
+            type: Directory
