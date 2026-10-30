@@ -9,7 +9,7 @@ set -u
 RUNTIME=$1 KILLMODE=$2 IMAGE=${3:-}
 HANDLER=vm
 
-shims() { pgrep -f "containerd-shim-(runsc|kata)-v2" || true; }
+shims() { pgrep -f "containerd-shim-(runsc-v1|kata-v2)" || true; }
 vmprocs() { pgrep -f '^runsc-sandbox|qemu-system|cloud-hypervisor' || true; }
 show() {
     for p in "$@"; do
@@ -25,6 +25,7 @@ gvisor)
     ;;
 kata-go|kata-rs)
     sudo tar --zstd -xf /tmp/kata-static.tar.zst -C /
+    sudo tar --zstd -xf /tmp/kata-go-static.tar.zst -C /
     if [ "$RUNTIME" = kata-go ]; then
         shim=/opt/kata/bin/containerd-shim-kata-v2
         cfg=/opt/kata/share/defaults/kata-containers/configuration-qemu.toml
@@ -36,9 +37,6 @@ kata-go|kata-rs)
     printf '[crio.runtime.runtimes.%s]\nruntime_path = "%s"\nruntime_type = "vm"\nruntime_root = "/run/vc"\nruntime_config_path = "%s"\nprivileged_without_host_devices = true\n' \
         $HANDLER "$shim" "$cfg" | sudo tee /etc/crio/crio.conf.d/90-vm.conf
     sudo systemctl restart crio
-    # CRI-O made its overlay home a private mount at its first start; the
-    # shim's mount namespace would not see container root filesystems.
-    sudo mount --make-shared /var/lib/containers/storage/overlay 2>/dev/null || true
     ;;
 esac
 if [ "$KILLMODE" = process ]; then
@@ -47,6 +45,9 @@ if [ "$KILLMODE" = process ]; then
     sudo systemctl daemon-reload
     sudo systemctl restart crio
 fi
+# CRI-O made its overlay home a private mount at its first start; Kata's
+# shim would not see container root filesystems in it.
+sudo mount --make-shared /var/lib/containers/storage/overlay 2>/dev/null || true
 crio --version | head -1
 echo "crio.service KillMode: $(systemctl show crio -p KillMode --value)"
 

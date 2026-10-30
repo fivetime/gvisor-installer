@@ -39,6 +39,8 @@ jobs:
           sudo chmod 666 /dev/kvm
           curl -fsSL -o /tmp/kata-static.tar.zst \
             "https://github.com/kata-containers/kata-containers/releases/download/$KATA_VERSION/kata-static-$KATA_VERSION-amd64.tar.zst"
+          curl -fsSL -o /tmp/kata-go-static.tar.zst \
+            "https://github.com/kata-containers/kata-containers/releases/download/$KATA_VERSION/kata-go-static-$KATA_VERSION-amd64.tar.zst"
       - run: ci/repro-crio-restart.sh ${{ matrix.runtime }} ${{ matrix.killmode }} gvisor-installer:repro
       - if: always()
         uses: actions/upload-artifact@v4
