@@ -1,0 +1,38 @@
+name: repro-crio-restart
+on:
+  push:
+    branches: [crio-vm-restart-repro]
+  workflow_dispatch:
+jobs:
+  repro:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [stopp, inspect]
+    env:
+      CRIO_VERSION: v1.37
+      KUBERNETES_VERSION: v1.36
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CRI-O and crictl
+        run: |
+          curl -fsSL "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$CRIO_VERSION/deb/Release.key" |
+            sudo gpg --dearmor -o /etc/apt/keyrings/cri-o.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/cri-o.gpg] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$CRIO_VERSION/deb/ /" |
+            sudo tee /etc/apt/sources.list.d/cri-o.list
+          curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/Release.key" |
+            sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/kubernetes.gpg] https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/ /" |
+            sudo tee /etc/apt/sources.list.d/kubernetes.list
+          sudo apt-get update
+          sudo apt-get install -y cri-o cri-tools
+          sudo systemctl start crio
+          printf 'runtime-endpoint: unix:///run/crio/crio.sock\ntimeout: 60\n' | sudo tee /etc/crictl.yaml
+      - run: docker build --build-arg GVISOR_RELEASE="$(cat GVISOR_RELEASE)" -t gvisor-installer:repro .
+      - run: ci/repro-crio-restart.sh gvisor-installer:repro ${{ matrix.mode }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crio-log-${{ matrix.mode }}
+          path: /tmp/crio.log
