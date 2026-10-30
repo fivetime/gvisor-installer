@@ -9,8 +9,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runtime: [gvisor, kata-go, kata-rs]
-        killmode: [default, process]
+        runtime: [gvisor]
+        killmode: [default]
+        # The tip of release-1.37, which has #10422 (not released yet).
+        crio: [b54e8d1dffac60f32b67794d942e84ff48d89a13]
     env:
       CRIO_VERSION: v1.37
       KUBERNETES_VERSION: v1.36
@@ -29,7 +31,11 @@ jobs:
             sudo tee /etc/apt/sources.list.d/kubernetes.list
           sudo apt-get update
           sudo apt-get install -y cri-o cri-tools
-          sudo systemctl start crio
+          curl -fsSL https://raw.githubusercontent.com/cri-o/packaging/main/get | sudo bash -s -- -t ${{ matrix.crio }}
+          sudo systemctl daemon-reload
+          systemctl cat crio | head -20
+          sudo systemctl restart crio
+          crio --version
           printf 'runtime-endpoint: unix:///run/crio/crio.sock\ntimeout: 60\n' | sudo tee /etc/crictl.yaml
       - if: matrix.runtime == 'gvisor'
         run: docker build --build-arg GVISOR_RELEASE="$(cat GVISOR_RELEASE)" -t gvisor-installer:repro .
@@ -45,5 +51,5 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: crio-log-${{ matrix.runtime }}-${{ matrix.killmode }}
+          name: crio-log-${{ matrix.runtime }}-${{ matrix.killmode }}-fixed
           path: /tmp/crio.log
