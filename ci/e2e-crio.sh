@@ -74,11 +74,16 @@ echo "== uninstall must refuse while a gVisor pod runs"
 if installer "$IMAGE" uninstall; then fail "uninstall went ahead with a gVisor pod running"; fi
 test -f $DROPIN || fail "the refused uninstall removed the drop-in"
 
-echo "== rename the handler: runsc is added, gvisor stays while its pod runs"
+echo "== removing the gvisor handler is refused while its pod runs"
+before_rename=$(started)
 if installer -e GVISOR_HANDLER=runsc -e GVISOR_REMOVE_HANDLERS=gvisor "$IMAGE" install; then
     fail "removing the gvisor handler went ahead with its pod running"
 fi
-crio config 2>/dev/null | grep -q 'runtimes.runsc\]' || fail "the runsc handler was not added"
+# Refused before anything changed: no runsc handler, and no CRI-O restart,
+# which would leave CRI-O 1.37 unable to stop this pod (it crashes in
+# runtimeVM.StopContainer for a VM-type sandbox it did not start).
+test "$(started)" = "$before_rename" || fail "the refused rename restarted CRI-O"
+crio config 2>/dev/null | grep -q 'runtimes.runsc\]' && fail "the refused rename added the runsc handler"
 test -f $DROPIN || fail "the refused removal took the gvisor drop-in away"
 
 sudo crictl stopp "$pod"

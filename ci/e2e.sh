@@ -28,7 +28,7 @@ on_node 'ps -eo args' | grep '^runsc-sandbox' | head -1 | tee /tmp/sandbox.args
 grep -q -- '--net-raw=true' /tmp/sandbox.args || fail "runscFlags did not reach runsc"
 grep -q -- '--platform=systrap' /tmp/sandbox.args || fail "platform did not reach runsc"
 
-echo "== rename the handler: runsc is added, gvisor stays while its pod runs"
+echo "== removing the gvisor handler is refused while its pod runs"
 # The RuntimeClass's handler cannot change: the chart drops it here.
 helm upgrade gv charts/gvisor-installer -n $NS --reuse-values \
     --set gvisor.handler=runsc --set 'gvisor.removeHandlers={gvisor}' --set runtimeClass.create=false
@@ -39,7 +39,7 @@ until kubectl -n $NS logs -l app.kubernetes.io/component=installer -c install --
     sleep 3
 done
 on_node 'containerd config dump' | grep -q 'runtimes.gvisor\]' || fail "the refused removal took the gvisor handler away"
-on_node 'containerd config dump' | grep -q 'runtimes.runsc\]' || fail "the runsc handler was not added"
+on_node 'containerd config dump' | grep -q 'runtimes.runsc\]' && fail "the refused rename added the runsc handler"
 
 kubectl delete pod gvisor-test --wait --timeout=120s
 echo "== the gvisor handler goes once its pod is gone"

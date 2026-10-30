@@ -313,6 +313,14 @@ do_install() {
     case $HANDLER in
         *[!a-z0-9-]*|'') die "handler \"$HANDLER\" must be lowercase letters, digits and dashes" ;;
     esac
+    # Refused before anything changes, rather than after restarting the CRI
+    # runtimes for the new handler.
+    for h in $REMOVE_HANDLERS; do
+        [ "$h" != "$HANDLER" ] || die "GVISOR_REMOVE_HANDLERS names the handler being installed, $h"
+        if [ "$FORCE" != true ] && handler_in_use "$h"; then
+            die "sandboxes started through the handler $h still run here; delete them before removing it (or set GVISOR_FORCE=true)"
+        fi
+    done
     install_release
     for c in $(detect_cri); do
         case $c in
@@ -322,7 +330,6 @@ do_install() {
         esac
     done
     for h in $REMOVE_HANDLERS; do
-        [ "$h" != "$HANDLER" ] || die "GVISOR_REMOVE_HANDLERS names the handler being installed, $h"
         # In a subshell: remove_handler sets the handler's paths.
         (remove_handler "$h")
     done
@@ -345,12 +352,26 @@ remove_dropin() {
     fi
 }
 
-# True when a sandbox started through handler $1 still runs: CRI-O keeps its
-# state under the handler's runtime_root, containerd the shim options (with
-# the handler's ConfigPath) in the task's bundle.
+# True when a sandbox started through handler $1 still runs. CRI-O keeps its
+# state under the handler's runtime_root. containerd records the handler's
+# shim options, whose ConfigPath names the handler's directory, with each
+# container; ctr shows them as an encoded protobuf.
 handler_in_use() {
     [ -n "$(ls -A "$HOST_ROOT/run/runsc-$1" 2>/dev/null)" ] && return 0
-    grep -lqs "$PREFIX/handlers/$1/" "$HOST_ROOT"/run/containerd/io.containerd.runtime.v2.task/*/*/options.json
+    [ -e "$HOST_ROOT$CONTAINERD_DROPIN_DIR/90-gvisor-$1.toml" ] || return 1
+    host sh -c 'command -v ctr' >/dev/null 2>&1 ||
+        die "cannot tell whether containerd still runs sandboxes through the handler $1: no ctr on the host (set GVISOR_FORCE=true to remove it anyway)"
+    for ns in $(host ctr namespaces ls -q); do
+        for id in $(host ctr -n "$ns" tasks ls -q); do
+            info=$(host ctr -n "$ns" containers info "$id" 2>/dev/null) || continue
+            if printf '%s' "$info" | grep -q "$PREFIX/handlers/$1/" ||
+               printf '%s' "$info" | jq -r '.Runtime.Options.value // empty' | base64 -d 2>/dev/null |
+                   grep -aq "$PREFIX/handlers/$1/"; then
+                return 0
+            fi
+        done
+    done
+    return 1
 }
 
 # Removes handler $1, which an earlier install registered, from every runtime
@@ -361,9 +382,6 @@ remove_handler() {
     containerd_dropin=$HOST_ROOT$CONTAINERD_DROPIN_DIR/$DROPIN_NAME.toml
     if [ ! -e "$crio_dropin" ] && [ ! -e "$containerd_dropin" ] && [ ! -e "$HOST_ROOT$HANDLER_DIR" ]; then
         return 0
-    fi
-    if [ "$FORCE" != true ] && handler_in_use "$1"; then
-        die "sandboxes started through the handler $1 still run here; delete them before removing it (or set GVISOR_FORCE=true)"
     fi
     remove_dropin crio "$crio_dropin"
     remove_dropin containerd "$containerd_dropin"
