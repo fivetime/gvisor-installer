@@ -9,6 +9,10 @@ gvisor:
   # The runtime handler registered with the CRI runtime, and the RuntimeClass's
   # handler. Lowercase letters, digits and dashes.
   handler: gvisor
+  # Handlers an earlier install registered, to remove from the nodes: after
+  # changing handler, the old one stays registered until it is listed here.
+  # A node where sandboxes started through one of them still run refuses.
+  removeHandlers: []
   # systrap needs no /dev/kvm and works in nested VMs; kvm is faster where
   # /dev/kvm exists on the node.
   platform: systrap

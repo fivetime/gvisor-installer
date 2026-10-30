@@ -30,7 +30,7 @@ gVisor 是被宿主机的 CRI 运行时直接执行的程序，不是常驻服�
 ## Kubernetes（Helm）
 
 ```bash
-helm install gvisor oci://ghcr.io/fivetime/charts/gvisor-installer --version 0.1.1 \
+helm install gvisor oci://ghcr.io/fivetime/charts/gvisor-installer --version 0.1.2 \
     -n gvisor-system --create-namespace \
     --set nodeSelector.gvisor=enabled
 kubectl label node <节点> gvisor=enabled
@@ -52,6 +52,7 @@ kubectl label node <节点> gvisor=enabled
 | 值 | 默认 | 说明 |
 |---|---|---|
 | `gvisor.handler` | `gvisor` | runtime handler 名，也是 RuntimeClass 的 handler |
+| `gvisor.removeHandlers` | `[]` | 要从节点上删掉的旧 handler 名，见下文"改 handler 名" |
 | `gvisor.platform` | `systrap` | `systrap` 不需要 `/dev/kvm`，嵌套虚拟化里也能用；有 `/dev/kvm` 时 `kvm` 更快 |
 | `gvisor.runscFlags` | `{}` | 额外的 runsc 参数，如 `{net-raw: "true"}` 允许 pod 用 raw socket（ping） |
 | `gvisor.cri` | `auto` | `auto`：CRI-O 在运行就配 CRI-O，否则配 containerd；也可以写 `containerd`、`crio` 或 `"crio containerd"` |
@@ -85,6 +86,7 @@ rm /etc/containers/systemd/gvisor-installer.container && systemctl daemon-reload
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `GVISOR_HANDLER` | `gvisor` | handler 名（小写字母、数字、`-`） |
+| `GVISOR_REMOVE_HANDLERS` | 空 | 安装时删掉的旧 handler，空格分隔 |
 | `GVISOR_PLATFORM` | `systrap` | runsc 的 `--platform` |
 | `GVISOR_RUNSC_FLAGS` | 空 | 空格分隔的 `名=值`，如 `net-raw=true` |
 | `GVISOR_CRI` | `auto` | `containerd`、`crio`，或两者都写 |
@@ -97,6 +99,19 @@ rm /etc/containers/systemd/gvisor-installer.container && systemctl daemon-reload
 | `GVISOR_CRIO_DROPIN_DIR` | `/etc/crio/crio.conf.d` | |
 | `GVISOR_FORCE` | `false` | 卸载时不检查运行中的沙箱 |
 | `GVISOR_NODE_LABEL` | 空 | 仅 Kubernetes：装好后给节点打的标签 |
+
+## 改 handler 名
+
+换 `gvisor.handler` 后，节点上会多注册一个新 handler，旧的原样保留，已经在跑的沙箱不受影响。
+确认没有 Pod 再用旧 handler 后，把它写进 `gvisor.removeHandlers` 再升级一次：安装器删掉旧 handler 的
+drop-in 和 `/opt/gvisor/handlers/<旧名>/`，重启 CRI 运行时，gVisor 本身和节点标签不动。
+节点上还有经旧 handler 启动的沙箱时，安装器拒绝删除并报错（CRI-O 看 `/run/runsc-<旧名>`，
+containerd 看任务 bundle 里 `options.json` 记的 shim 配置路径），删掉那些 Pod 后 DaemonSet 会自动重试。
+
+RuntimeClass 的 handler 字段建好后不能改：`runtimeClass.create: true` 时换 handler，
+`helm upgrade` 会失败。先删掉 RuntimeClass（运行中的 Pod 不受影响）再升级，chart 会按新 handler 重建。
+
+单机：`GVISOR_REMOVE_HANDLERS`，空格分隔。
 
 ## 对 CRI 运行时的要求
 
@@ -141,9 +156,10 @@ dockerd 跑在容器里时，要把宿主机的 `/opt/gvisor` 挂进去，并在
 `.github/workflows/ci.yaml`：
 
 - 每次 push 和 PR：shellcheck、`helm lint`，再做两组端到端测试：
-  - kind（containerd）里用 chart 安装、跑 gVisor pod、确认卸载在 pod 运行时会拒绝、卸载后节点干净；
+  - kind（containerd）里用 chart 安装、跑 gVisor pod、改 handler 名（旧 handler 在用时拒绝删除）、
+    确认卸载在 pod 运行时会拒绝、卸载后节点干净；
   - runner 上装 CRI-O 1.37，按 Quadlet 的方式跑安装器：CRI-O 起不来时回滚且不再重试、
-    跑 gVisor pod（含 ping 和 runsc 参数）、卸载拒绝与清理；
+    跑 gVisor pod（含 ping 和 runsc 参数）、改 handler 名、卸载拒绝与清理；
 - 每次 push：多架构镜像推到 `ghcr.io/fivetime/gvisor-installer:sha-<commit>`；
 - `v<chart version>` 标签：镜像加上 `:<chart version>` 标签，chart 推到 `oci://ghcr.io/fivetime/charts/gvisor-installer`。
 

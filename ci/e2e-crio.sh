@@ -74,17 +74,31 @@ echo "== uninstall must refuse while a gVisor pod runs"
 if installer "$IMAGE" uninstall; then fail "uninstall went ahead with a gVisor pod running"; fi
 test -f $DROPIN || fail "the refused uninstall removed the drop-in"
 
+echo "== rename the handler: runsc is added, gvisor stays while its pod runs"
+if installer -e GVISOR_HANDLER=runsc -e GVISOR_REMOVE_HANDLERS=gvisor "$IMAGE" install; then
+    fail "removing the gvisor handler went ahead with its pod running"
+fi
+crio config 2>/dev/null | grep -q 'runtimes.runsc\]' || fail "the runsc handler was not added"
+test -f $DROPIN || fail "the refused removal took the gvisor drop-in away"
+
 sudo crictl stopp "$pod"
 # runsc fails the first delete under CRI-O, which has unmounted the rootfs
 # that held the sandbox's filestore by then (runsc ignores ENOENT for shared
 # mounts' filestores but not for the rootfs'). Its state is gone by then, and
 # a retry, as kubelet's, succeeds.
 sudo crictl rmp "$pod" || sudo crictl rmp "$pod"
+echo "== the gvisor handler goes once its pod is gone"
+installer -e GVISOR_HANDLER=runsc -e GVISOR_REMOVE_HANDLERS=gvisor "$IMAGE" install
+crio config 2>/dev/null | grep -q 'runtimes.gvisor\]' && fail "CRI-O still has the gvisor handler"
+crio config 2>/dev/null | grep -q 'runtimes.runsc\]' || fail "CRI-O lost the runsc handler"
+test ! -e $DROPIN && test ! -e /opt/gvisor/handlers/gvisor || fail "the gvisor handler's files are left"
+test -x /opt/gvisor/release/runsc || fail "removing a handler removed gVisor"
+
 echo "== uninstall"
-installer "$IMAGE" uninstall
+installer -e GVISOR_HANDLER=runsc "$IMAGE" uninstall
 systemctl is-active crio || fail "CRI-O is down after uninstall"
-for f in /opt/gvisor /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1 $DROPIN; do
+for f in /opt/gvisor /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1 $DROPIN /etc/crio/crio.conf.d/90-gvisor-runsc.conf; do
     if [ -e "$f" ] || [ -L "$f" ]; then fail "$f left behind"; fi
 done
-crio config 2>/dev/null | grep -q 'runtimes.gvisor\]' && fail "CRI-O still has the gvisor handler"
+crio config 2>/dev/null | grep -qE 'runtimes.(gvisor|runsc)\]' && fail "CRI-O still has a gVisor handler"
 echo "PASS"

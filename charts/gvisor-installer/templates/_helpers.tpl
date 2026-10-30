@@ -32,6 +32,8 @@ app.kubernetes.io/component: installer
       fieldPath: spec.nodeName
 - name: GVISOR_HANDLER
   value: {{ .Values.gvisor.handler | quote }}
+- name: GVISOR_REMOVE_HANDLERS
+  value: {{ join " " .Values.gvisor.removeHandlers | quote }}
 - name: GVISOR_PLATFORM
   value: {{ .Values.gvisor.platform | quote }}
 - name: GVISOR_RUNSC_FLAGS

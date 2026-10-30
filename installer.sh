@@ -37,6 +37,10 @@ RESTART_TIMEOUT=${GVISOR_RESTART_TIMEOUT:-60}
 FORCE=${GVISOR_FORCE:-false}
 # Kubernetes: the node label set to "true" once the node can run gVisor pods.
 NODE_LABEL=${GVISOR_NODE_LABEL:-}
+# Handlers an earlier install registered that install removes, space
+# separated (after renaming the handler: the old name stays registered until
+# it is listed here).
+REMOVE_HANDLERS=${GVISOR_REMOVE_HANDLERS:-}
 NODE_NAME=${NODE_NAME:-}
 
 SRC=/gvisor
@@ -317,6 +321,11 @@ do_install() {
             *) die "unknown CRI runtime \"$c\"; use containerd or crio" ;;
         esac
     done
+    for h in $REMOVE_HANDLERS; do
+        [ "$h" != "$HANDLER" ] || die "GVISOR_REMOVE_HANDLERS names the handler being installed, $h"
+        # In a subshell: remove_handler sets the handler's paths.
+        (remove_handler "$h")
+    done
     label_node '"true"'
     log "done: runtime handler $HANDLER, gVisor $(cat "$SRC/RELEASE"), platform $PLATFORM"
 }
@@ -334,6 +343,32 @@ remove_dropin() {
     else
         rm -f "$prev"
     fi
+}
+
+# True when a sandbox started through handler $1 still runs: CRI-O keeps its
+# state under the handler's runtime_root, containerd the shim options (with
+# the handler's ConfigPath) in the task's bundle.
+handler_in_use() {
+    [ -n "$(ls -A "$HOST_ROOT/run/runsc-$1" 2>/dev/null)" ] && return 0
+    grep -lqs "$PREFIX/handlers/$1/" "$HOST_ROOT"/run/containerd/io.containerd.runtime.v2.task/*/*/options.json
+}
+
+# Removes handler $1, which an earlier install registered, from every runtime
+# that has it; gVisor itself and the node label stay. Run in a subshell.
+remove_handler() {
+    HANDLER_DIR=$PREFIX/handlers/$1 DROPIN_NAME=90-gvisor-$1
+    crio_dropin=$HOST_ROOT$CRIO_DROPIN_DIR/$DROPIN_NAME.conf
+    containerd_dropin=$HOST_ROOT$CONTAINERD_DROPIN_DIR/$DROPIN_NAME.toml
+    if [ ! -e "$crio_dropin" ] && [ ! -e "$containerd_dropin" ] && [ ! -e "$HOST_ROOT$HANDLER_DIR" ]; then
+        return 0
+    fi
+    if [ "$FORCE" != true ] && handler_in_use "$1"; then
+        die "sandboxes started through the handler $1 still run here; delete them before removing it (or set GVISOR_FORCE=true)"
+    fi
+    remove_dropin crio "$crio_dropin"
+    remove_dropin containerd "$containerd_dropin"
+    rm -rf "$HOST_ROOT$HANDLER_DIR"
+    log "removed the runtime handler $1"
 }
 
 do_uninstall() {
