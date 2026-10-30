@@ -105,7 +105,7 @@ rm /etc/containers/systemd/gvisor-installer.container && systemctl daemon-reload
 换 `gvisor.handler` 后，节点上会多注册一个新 handler，旧的原样保留，已经在跑的沙箱不受影响。
 确认没有 Pod 再用旧 handler 后，把它写进 `gvisor.removeHandlers` 再升级一次：安装器删掉旧 handler 的
 drop-in 和 `/opt/gvisor/handlers/<旧名>/`，重启 CRI 运行时，gVisor 本身和节点标签不动。
-节点上还有经旧 handler 启动的沙箱时，安装器在改动任何东西之前就拒绝并报错（CRI-O 看沙箱进程的 `--root=/run/runsc-<旧名>`，
+节点上还有经旧 handler 启动的沙箱时，安装器在改动任何东西之前就拒绝并报错（CRI-O 看沙箱 bundle 里 OCI spec 的 `io.kubernetes.cri-o.RuntimeHandler` 注解，
 containerd 用宿主机的 `ctr` 看运行中任务记录的 shim 配置路径），删掉那些 Pod 后 DaemonSet 会自动重试。
 
 RuntimeClass 的 handler 字段建好后不能改：`runtimeClass.create: true` 时换 handler，

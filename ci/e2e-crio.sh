@@ -76,7 +76,6 @@ test -f $DROPIN || fail "the refused uninstall removed the drop-in"
 
 echo "== removing the gvisor handler is refused while its pod runs"
 before_rename=$(started)
-grep -q -- '--root=/run/runsc-gvisor' /tmp/sandbox.args || fail "the sandbox does not run with its handler's runtime_root"
 if installer -e GVISOR_HANDLER=runsc -e GVISOR_REMOVE_HANDLERS=gvisor "$IMAGE" install; then
     fail "removing the gvisor handler went ahead with its pod running"
 fi
