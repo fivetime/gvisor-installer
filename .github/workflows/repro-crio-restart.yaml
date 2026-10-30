@@ -9,10 +9,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [stopp, inspect]
+        runtime: [gvisor, kata-go, kata-rs]
+        killmode: [default, process]
     env:
       CRIO_VERSION: v1.37
       KUBERNETES_VERSION: v1.36
+      KATA_VERSION: 4.3.1
     steps:
       - uses: actions/checkout@v4
       - name: Install CRI-O and crictl
@@ -29,10 +31,17 @@ jobs:
           sudo apt-get install -y cri-o cri-tools
           sudo systemctl start crio
           printf 'runtime-endpoint: unix:///run/crio/crio.sock\ntimeout: 60\n' | sudo tee /etc/crictl.yaml
-      - run: docker build --build-arg GVISOR_RELEASE="$(cat GVISOR_RELEASE)" -t gvisor-installer:repro .
-      - run: ci/repro-crio-restart.sh gvisor-installer:repro ${{ matrix.mode }}
+      - if: matrix.runtime == 'gvisor'
+        run: docker build --build-arg GVISOR_RELEASE="$(cat GVISOR_RELEASE)" -t gvisor-installer:repro .
+      - if: matrix.runtime != 'gvisor'
+        run: |
+          ls -l /dev/kvm
+          sudo chmod 666 /dev/kvm
+          curl -fsSL -o /tmp/kata-static.tar.zst \
+            "https://github.com/kata-containers/kata-containers/releases/download/$KATA_VERSION/kata-static-$KATA_VERSION-amd64.tar.zst"
+      - run: ci/repro-crio-restart.sh ${{ matrix.runtime }} ${{ matrix.killmode }} gvisor-installer:repro
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: crio-log-${{ matrix.mode }}
+          name: crio-log-${{ matrix.runtime }}-${{ matrix.killmode }}
           path: /tmp/crio.log
