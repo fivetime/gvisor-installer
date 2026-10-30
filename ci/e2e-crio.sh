@@ -91,7 +91,9 @@ echo "== the gvisor handler goes once its pod is gone"
 installer -e GVISOR_HANDLER=runsc -e GVISOR_REMOVE_HANDLERS=gvisor "$IMAGE" install
 crio config 2>/dev/null | grep -q 'runtimes.gvisor\]' && fail "CRI-O still has the gvisor handler"
 crio config 2>/dev/null | grep -q 'runtimes.runsc\]' || fail "CRI-O lost the runsc handler"
-test ! -e $DROPIN && test ! -e /opt/gvisor/handlers/gvisor || fail "the gvisor handler's files are left"
+for f in $DROPIN /opt/gvisor/handlers/gvisor; do
+    test ! -e "$f" || fail "$f left after removing the gvisor handler"
+done
 test -x /opt/gvisor/release/runsc || fail "removing a handler removed gVisor"
 
 echo "== uninstall"
