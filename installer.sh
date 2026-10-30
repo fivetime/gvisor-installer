@@ -352,12 +352,13 @@ remove_dropin() {
     fi
 }
 
-# True when a sandbox started through handler $1 still runs. CRI-O keeps its
-# state under the handler's runtime_root. containerd records the handler's
+# True when a sandbox started through handler $1 still runs. Under CRI-O,
+# runsc runs it with the handler's runtime_root as --root (the directory
+# itself keeps entries after the pods are gone). containerd records the handler's
 # shim options, whose ConfigPath names the handler's directory, with each
 # container; ctr shows them as an encoded protobuf.
 handler_in_use() {
-    [ -n "$(ls -A "$HOST_ROOT/run/runsc-$1" 2>/dev/null)" ] && return 0
+    pgrep -f "^runsc-sandbox .*--root=/run/runsc-$1( |\$)" >/dev/null 2>&1 && return 0
     [ -e "$HOST_ROOT$CONTAINERD_DROPIN_DIR/90-gvisor-$1.toml" ] || return 1
     host sh -c 'command -v ctr' >/dev/null 2>&1 ||
         die "cannot tell whether containerd still runs sandboxes through the handler $1: no ctr on the host (set GVISOR_FORCE=true to remove it anyway)"
